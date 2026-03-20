@@ -3,113 +3,120 @@
 
 #include <sys/resource.h>
 #include <sys/time.h>
-
-#include <glibtop.h>
-#include <glibtop/cpu.h>
+#include <fstream>
+#include <string>
+#include <cstdint>
 
 class ESCpuUsage
 {
     Base::CTimer m_Timer;
-    double m_LastCPUCheckTime;
+    double   m_LastCPUCheckTime;
+    double   m_LastESTime;
 
-    double m_LastSystemTime;
-    double m_LastESTime;
+    uint64_t m_LastUser;
+    uint64_t m_LastNice;
+    uint64_t m_LastSystem;
+    uint64_t m_LastIdle;
 
-    glibtop* glibtopdata;
-    glibtop_cpu m_lastProcessorInfo, m_currentProcessorInfo;
-
-    int numProcessors;
+    bool ReadProcStat(uint64_t& user, uint64_t& nice,
+                      uint64_t& system, uint64_t& idle)
+    {
+        std::ifstream stat("/proc/stat");
+        if (!stat) return false;
+        std::string label;
+        uint64_t iowait = 0, irq = 0, softirq = 0, steal = 0;
+        stat >> label >> user >> nice >> system >> idle
+             >> iowait >> irq >> softirq >> steal;
+        return (label == "cpu");
+    }
 
   public:
-    ESCpuUsage() : m_LastCPUCheckTime(0)
+    ESCpuUsage()
+        : m_LastCPUCheckTime(0), m_LastESTime(0),
+          m_LastUser(0), m_LastNice(0), m_LastSystem(0), m_LastIdle(0)
     {
-
-        glibtopdata = glibtop_init();
-
         m_Timer.Reset();
         m_LastCPUCheckTime = m_Timer.Time();
 
         struct rusage r_usage;
         if (!getrusage(RUSAGE_SELF, &r_usage))
         {
-
             m_LastESTime = (double)r_usage.ru_utime.tv_sec +
                            (double)r_usage.ru_utime.tv_usec * 1e-6;
-
             m_LastESTime += (double)r_usage.ru_stime.tv_sec +
                             (double)r_usage.ru_stime.tv_usec * 1e-6;
         }
 
-        numProcessors = glibtopdata->ncpu + 1;
-        glibtop_get_cpu(&m_lastProcessorInfo);
+        ReadProcStat(m_LastUser, m_LastNice, m_LastSystem, m_LastIdle);
     }
 
     virtual ~ESCpuUsage() {}
 
     bool GetCpuUsage(int& _total, int& _es)
     {
-        struct rusage r_usage;
-
         double newtime = m_Timer.Time();
+        double period  = newtime - m_LastCPUCheckTime;
 
-        double period = newtime - m_LastCPUCheckTime;
         if (period > 0.)
         {
+            // Per-process CPU usage
+            struct rusage r_usage;
             if (!getrusage(RUSAGE_SELF, &r_usage))
             {
-
                 double utime = (double)r_usage.ru_utime.tv_sec +
                                (double)r_usage.ru_utime.tv_usec * 1e-6;
-
                 utime += (double)r_usage.ru_stime.tv_sec +
                          (double)r_usage.ru_stime.tv_usec * 1e-6;
-
-                _es = int((utime - m_LastESTime) * 100. / period);
-
+                _es = int((utime - m_LastESTime) * 100.0 / period);
                 m_LastESTime = utime;
             }
 
-            float accInUse = 0.0f, accTotal = 0.0f;
-
-            glibtop_get_cpu(&m_currentProcessorInfo);
-
-            for (unsigned i = 0U; i < numProcessors; ++i)
+            // System-wide CPU usage via /proc/stat
+            uint64_t user, nice, system, idle;
+            if (ReadProcStat(user, nice, system, idle))
             {
-                float inUse, total;
+                uint64_t dUser   = user   - m_LastUser;
+                uint64_t dNice   = nice   - m_LastNice;
+                uint64_t dSystem = system - m_LastSystem;
+                uint64_t dIdle   = idle   - m_LastIdle;
+                uint64_t dBusy   = dUser + dNice + dSystem;
+                uint64_t dTotal  = dBusy + dIdle;
+                _total = (dTotal > 0) ? (int)(dBusy * 100 / dTotal) : 0;
 
-                inUse = ((m_currentProcessorInfo.xcpu_user[i] -
-                          m_lastProcessorInfo.xcpu_user[i]) +
-                         (m_currentProcessorInfo.xcpu_sys[i] -
-                          m_lastProcessorInfo.xcpu_sys[i]) +
-                         (m_currentProcessorInfo.xcpu_nice[i] -
-                          m_lastProcessorInfo.xcpu_nice[i]));
-
-                total = inUse + (m_currentProcessorInfo.xcpu_idle[i] -
-                                 m_lastProcessorInfo.xcpu_idle[i]);
-
-                accInUse += inUse;
-                accTotal += total;
+                m_LastUser   = user;
+                m_LastNice   = nice;
+                m_LastSystem = system;
+                m_LastIdle   = idle;
             }
-
-            _total = (double)accInUse * 100. / (double)accTotal;
-
-            _es /= numProcessors;
-
-            memcpy(&m_lastProcessorInfo, &m_currentProcessorInfo,
-                   sizeof(glibtop_cpu));
         }
         else
         {
-            _es = 0;
+            _es    = 0;
             _total = 0;
         }
 
-        _es = ::Base::Math::Clamped(_es, 0, 100);
+        _es    = ::Base::Math::Clamped(_es,    0, 100);
         _total = ::Base::Math::Clamped(_total, 0, 100);
 
         m_LastCPUCheckTime = newtime;
-
         return true;
+    }
+
+    bool GetAppCpuUsage(int& _es, int& _total)
+    {
+        return GetCpuUsage(_total, _es);
+    }
+
+    float GetGpuUsage() { return 0.f; }
+
+    int GetNumCores()
+    {
+        int n = 0;
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        std::string line;
+        while (std::getline(cpuinfo, line))
+            if (line.rfind("processor", 0) == 0) ++n;
+        return n > 0 ? n : 1;
     }
 };
 
