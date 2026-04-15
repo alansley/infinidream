@@ -1,6 +1,6 @@
 build/
 build-appimage/
-AppDir/
+AppDir*/
 appimage-tools/
 ffmpeg-src/
 ffmpeg-minimal/
