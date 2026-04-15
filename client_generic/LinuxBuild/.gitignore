@@ -1,2 +1,8 @@
 build/
+build-appimage/
+AppDir/
+appimage-tools/
+ffmpeg-src/
+ffmpeg-minimal/
+infinidream-*.AppImage
 a.out

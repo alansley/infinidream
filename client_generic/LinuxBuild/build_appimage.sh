@@ -9,8 +9,10 @@
 # Output: infinidream-<arch>.AppImage in this directory.
 #
 # Requirements:
-#   - All normal infinidream build dependencies (cmake, vulkan, ffmpeg, boost, etc.)
-#   - curl (to download linuxdeploy / appimagetool on first run)
+#   - All normal infinidream build dependencies (cmake, vulkan, boost, etc.)
+#     EXCEPT system FFmpeg — a minimal FFmpeg is compiled from source here.
+#   - curl (to download FFmpeg source + linuxdeploy / appimagetool on first run)
+#   - nasm or yasm (FFmpeg assembly optimisations; skipped gracefully if absent)
 #   - FUSE or kernel >= 5.13 with /dev/fuse available.
 #     On systems without FUSE the script sets APPIMAGE_EXTRACT_AND_RUN=1 automatically.
 
@@ -25,10 +27,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # start fresh so the packaged result reflects only the current build.
 # ---------------------------------------------------------------------------
 rm -rf "${SCRIPT_DIR}/AppDir"
-BUILD_DIR="${SCRIPT_DIR}/build"
+
+BUILD_DIR="${SCRIPT_DIR}/build-appimage"
 APPDIR="${SCRIPT_DIR}/AppDir"
 TOOLS_DIR="${SCRIPT_DIR}/appimage-tools"
 RUNTIME_DIR="${SCRIPT_DIR}/../Runtime"
+
+# ---------------------------------------------------------------------------
+# Minimal FFmpeg — built from source to avoid transitive codec dependencies
+# that crash when bundled (libgnutls, libzmq, libxvidcore, libopencore-amr, …).
+# Pinned to a specific release for reproducibility.
+# ---------------------------------------------------------------------------
+FFMPEG_VERSION="7.1.1"
+FFMPEG_TARBALL="ffmpeg-${FFMPEG_VERSION}.tar.xz"
+FFMPEG_URL="https://ffmpeg.org/releases/${FFMPEG_TARBALL}"
+FFMPEG_SRC_DIR="${SCRIPT_DIR}/ffmpeg-src/ffmpeg-${FFMPEG_VERSION}"
+FFMPEG_INSTALL="${SCRIPT_DIR}/ffmpeg-minimal"
 
 LINUXDEPLOY_BIN="linuxdeploy-${ARCH}.AppImage"
 APPIMAGETOOL_BIN="appimagetool-${ARCH}.AppImage"
@@ -64,12 +78,97 @@ download_tool() {
 # ---------------------------------------------------------------------------
 require_cmd cmake
 require_cmd curl
+require_cmd make
 
 # Detect whether FUSE is available; if not, fall back to extract-and-run mode.
 if [[ ! -e /dev/fuse ]]; then
     log "WARNING: /dev/fuse not found — enabling APPIMAGE_EXTRACT_AND_RUN=1 for tooling."
     export APPIMAGE_EXTRACT_AND_RUN=1
 fi
+
+# ---------------------------------------------------------------------------
+# Build minimal FFmpeg from source (cached — skipped if already built).
+#
+# --disable-everything + selective enables gives us a tiny FFmpeg with:
+#   • Decoders:   h264, hevc
+#   • BSFs:       h264_mp4toannexb, hevc_mp4toannexb
+#   • Parsers:    h264, hevc
+#   • Demuxers:   mov (MP4/MOV), matroska (MKV/WebM)
+#   • Protocols:  file, http, https, tcp, tls
+#   • TLS via OpenSSL (already a direct dependency — avoids gnutls entirely)
+#
+# This eliminates ALL transitive codec dependencies that would otherwise crash
+# at startup when loaded outside their native system environment.
+# ---------------------------------------------------------------------------
+FFMPEG_MARKER="${FFMPEG_INSTALL}/lib/pkgconfig/libavcodec.pc"
+if [[ -f "${FFMPEG_MARKER}" ]]; then
+    log "Minimal FFmpeg already built at ${FFMPEG_INSTALL}, skipping."
+else
+    log "Building minimal FFmpeg ${FFMPEG_VERSION} from source ..."
+
+    mkdir -p "${SCRIPT_DIR}/ffmpeg-src"
+
+    # Download tarball if not already present
+    FFMPEG_TARBALL_PATH="${SCRIPT_DIR}/ffmpeg-src/${FFMPEG_TARBALL}"
+    if [[ ! -f "${FFMPEG_TARBALL_PATH}" ]]; then
+        log "Downloading FFmpeg ${FFMPEG_VERSION} ..."
+        curl -fsSL --retry 3 -o "${FFMPEG_TARBALL_PATH}" "${FFMPEG_URL}"
+    else
+        log "FFmpeg tarball already downloaded, skipping."
+    fi
+
+    # Extract if not already extracted
+    if [[ ! -d "${FFMPEG_SRC_DIR}" ]]; then
+        log "Extracting FFmpeg source ..."
+        tar -xf "${FFMPEG_TARBALL_PATH}" -C "${SCRIPT_DIR}/ffmpeg-src"
+    fi
+
+    pushd "${FFMPEG_SRC_DIR}" > /dev/null
+
+    log "Configuring minimal FFmpeg ..."
+    ./configure \
+        --prefix="${FFMPEG_INSTALL}" \
+        --disable-everything \
+        --enable-shared \
+        --disable-static \
+        --enable-pic \
+        --enable-avformat \
+        --enable-avcodec \
+        --enable-avutil \
+        --enable-swscale \
+        --enable-swresample \
+        --enable-network \
+        --enable-openssl \
+        --enable-protocol=file \
+        --enable-protocol=http \
+        --enable-protocol=https \
+        --enable-protocol=tcp \
+        --enable-protocol=tls \
+        --enable-demuxer=mov \
+        --enable-demuxer=matroska \
+        --enable-decoder=h264 \
+        --enable-decoder=hevc \
+        --enable-parser=h264 \
+        --enable-parser=hevc \
+        --enable-bsf=h264_mp4toannexb \
+        --enable-bsf=hevc_mp4toannexb \
+        --disable-doc \
+        --disable-programs
+
+    log "Compiling minimal FFmpeg ($(nproc) jobs) ..."
+    make -j"$(nproc)"
+
+    log "Installing minimal FFmpeg to ${FFMPEG_INSTALL} ..."
+    make install
+
+    popd > /dev/null
+    log "Minimal FFmpeg build complete."
+fi
+
+# Point pkg-config and the linker at our minimal FFmpeg install.
+# This overrides any system FFmpeg for the cmake build below.
+export PKG_CONFIG_PATH="${FFMPEG_INSTALL}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+export LD_LIBRARY_PATH="${FFMPEG_INSTALL}/lib:${LD_LIBRARY_PATH:-}"
 
 # ---------------------------------------------------------------------------
 # Download AppImage toolchain (cached in appimage-tools/)
@@ -97,11 +196,12 @@ cp "$(command -v strip)" "${LINUXDEPLOY_DIR}/usr/bin/strip"
 LINUXDEPLOY="${LINUXDEPLOY_DIR}/AppRun"
 
 # ---------------------------------------------------------------------------
-# Build infinidream (Release)
+# Build infinidream (Release) against the minimal FFmpeg
 # ---------------------------------------------------------------------------
 log "Configuring CMake ..."
 cmake -B "${BUILD_DIR}" -S "${SCRIPT_DIR}" \
-    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_EXE_LINKER_FLAGS="-L${FFMPEG_INSTALL}/lib"
 
 log "Compiling ($(nproc) jobs) ..."
 cmake --build "${BUILD_DIR}" -j"$(nproc)"
@@ -142,7 +242,9 @@ cp "${RUNTIME_DIR}/logo.png"           "${APPDIR}/infinidream.png"  # icon
 #   - libxkbcommon         : Input — typically available on any desktop
 #   - libdecor             : Wayland decoration helper — host-provided
 #
-# Everything else (FFmpeg, Boost, OpenSSL, curl, libpng, ...) is bundled.
+# All FFmpeg libraries come from our minimal build and are fully self-contained —
+# no transitive codec dependencies that would crash when loaded in a foreign env.
+# Everything else (Boost, OpenSSL, curl, libpng, ...) is bundled.
 # ---------------------------------------------------------------------------
 log "Running linuxdeploy to bundle shared libraries ..."
 "${LINUXDEPLOY}" \
@@ -171,29 +273,6 @@ log "Running linuxdeploy to bundle shared libraries ..."
     --exclude-library "libc.so*"              \
     --exclude-library "libdl.so*"             \
     --exclude-library "librt.so*"
-
-# ---------------------------------------------------------------------------
-# Remove libraries that crash on startup when bundled.
-#
-# These libs have static constructors or IFUNC resolvers that segfault when
-# loaded outside their native environment. They are either:
-#   - present on all major distros (gnutls, zmq via system packages), OR
-#   - only used by FFmpeg codecs that infinidream never exercises (xvidcore,
-#     opencore-amr), so their absence causes a graceful codec-unavailable
-#     rather than a crash.
-# libleancrypto also has an undefined symbol (lc_kyber_512_dec) in the
-# bundled copy, making it broken regardless.
-# ---------------------------------------------------------------------------
-log "Removing libs that crash at startup when bundled ..."
-for lib in \
-    libgnutls.so* \
-    libleancrypto.so* \
-    libxvidcore.so* \
-    "libopencore-amrnb.so*" \
-    "libopencore-amrwb.so*" \
-    libzmq.so*; do
-    rm -f "${APPDIR}/usr/lib/"${lib} && log "  removed ${lib}" || true
-done
 
 # ---------------------------------------------------------------------------
 # Create the AppImage

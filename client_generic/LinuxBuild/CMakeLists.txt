@@ -41,6 +41,9 @@ if(PKG_CONFIG_FOUND)
         libswscale
         libswresample
     )
+    # Ensure the linker searches FFmpeg's lib directory (needed when PKG_CONFIG_PATH
+    # points at a custom-built FFmpeg install, e.g. the minimal AppImage FFmpeg).
+    link_directories(${FFMPEG_LIBRARY_DIRS})
 endif()
 
 # Wayland — optional, enables native Wayland surface (VK_KHR_wayland_surface).
