@@ -2,7 +2,9 @@ build/
 build-appimage/
 AppDir*/
 appimage-tools/
-ffmpeg-src/
+deps-src/
 ffmpeg-minimal/
+openssl-minimal/
 infinidream-*.AppImage
 a.out
+build-glibc-check/
