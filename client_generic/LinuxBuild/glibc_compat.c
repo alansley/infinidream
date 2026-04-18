@@ -42,27 +42,27 @@
 /* sqrtf */
 extern float __real_sqrtf(float);
 __asm__(".symver __real_sqrtf,sqrtf@GLIBC_2.2.5");
-float sqrtf(float x) { return __real_sqrtf(x); }
+__attribute__((visibility("hidden"))) float sqrtf(float x) { return __real_sqrtf(x); }
 
 /* acosf */
 extern float __real_acosf(float);
 __asm__(".symver __real_acosf,acosf@GLIBC_2.2.5");
-float acosf(float x) { return __real_acosf(x); }
+__attribute__((visibility("hidden"))) float acosf(float x) { return __real_acosf(x); }
 
 /* atan2f */
 extern float __real_atan2f(float, float);
 __asm__(".symver __real_atan2f,atan2f@GLIBC_2.2.5");
-float atan2f(float y, float x) { return __real_atan2f(y, x); }
+__attribute__((visibility("hidden"))) float atan2f(float y, float x) { return __real_atan2f(y, x); }
 
 /* fmod */
 extern double __real_fmod(double, double);
 __asm__(".symver __real_fmod,fmod@GLIBC_2.2.5");
-double fmod(double x, double y) { return __real_fmod(x, y); }
+__attribute__((visibility("hidden"))) double fmod(double x, double y) { return __real_fmod(x, y); }
 
 /* fmodf */
 extern float __real_fmodf(float, float);
 __asm__(".symver __real_fmodf,fmodf@GLIBC_2.2.5");
-float fmodf(float x, float y) { return __real_fmodf(x, y); }
+__attribute__((visibility("hidden"))) float fmodf(float x, float y) { return __real_fmodf(x, y); }
 
 /* ==========================================================================
  * C23 strtol / strtoull family: GLIBC_2.38 → GLIBC_2.2.5
